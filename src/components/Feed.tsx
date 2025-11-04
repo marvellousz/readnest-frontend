@@ -1,6 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { auth } from '@/lib/auth';
 
 interface Article {
   id: string;
@@ -37,6 +39,7 @@ interface FeedProps {
 }
 
 export default function Feed({ onContentSelect }: FeedProps) {
+  const router = useRouter();
   const [selectedArticle, setSelectedArticle] = useState<Article | null>(null);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('list');
   const [showAddFeed, setShowAddFeed] = useState(false);
@@ -50,8 +53,21 @@ export default function Feed({ onContentSelect }: FeedProps) {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [summary, setSummary] = useState<string | null>(null);
+  const [summarizing, setSummarizing] = useState(false);
+
+  // Handle authentication errors
+  const handleAuthError = () => {
+    auth.logout();
+    router.push('/auth/login');
+  };
 
   // Fetch articles from backend
+  const authHeaders = () => {
+    const token = auth.getToken();
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  };
+
   const fetchArticles = async () => {
     setLoading(true);
     setError(null);
@@ -59,7 +75,7 @@ export default function Feed({ onContentSelect }: FeedProps) {
       console.log('Fetching articles from:', `${API_BASE}/api/feeds`);
       const res = await fetch(`${API_BASE}/api/feeds`, {
         method: 'GET',
-        headers: { 'Content-Type': 'application/json' }
+        headers: { 'Content-Type': 'application/json', ...authHeaders() }
       });
       console.log('Response status:', res.status);
       if (res.ok) {
@@ -67,6 +83,10 @@ export default function Feed({ onContentSelect }: FeedProps) {
         console.log('Articles fetched:', data.length);
         setArticles(data);
       } else {
+        if (res.status === 401) {
+          handleAuthError();
+          return;
+        }
         const errorText = await res.text();
         console.error('Error response:', errorText);
         throw new Error(`Failed to fetch articles: ${res.status}`);
@@ -86,11 +106,14 @@ export default function Feed({ onContentSelect }: FeedProps) {
     try {
       const res = await fetch(`${API_BASE}/api/feeds/subscriptions`, {
         method: 'GET',
-        headers: { 'Content-Type': 'application/json' }
+        headers: { 'Content-Type': 'application/json', ...authHeaders() }
       });
       if (res.ok) {
         const data = await res.json();
         setSubscriptions(data);
+      } else if (res.status === 401) {
+        handleAuthError();
+        return;
       }
     } catch (err: any) {
       console.error('Failed to fetch subscriptions:', err.message);
@@ -104,7 +127,7 @@ export default function Feed({ onContentSelect }: FeedProps) {
     try {
       const res = await fetch(`${API_BASE}/api/feeds/refresh`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+        headers: { 'Content-Type': 'application/json', ...authHeaders() }
       });
       if (res.ok) {
         const data = await res.json();
@@ -113,6 +136,10 @@ export default function Feed({ onContentSelect }: FeedProps) {
         await fetchSubscriptions();
         setTimeout(() => setSuccess(null), 3000);
       } else {
+        if (res.status === 401) {
+          handleAuthError();
+          return;
+        }
         throw new Error(`Failed to refresh feeds: ${res.status}`);
       }
     } catch (err: any) {
@@ -163,7 +190,7 @@ export default function Feed({ onContentSelect }: FeedProps) {
       console.log('Feed Name:', feedName.trim());
       const res = await fetch(`${API_BASE}/api/feeds`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({ 
           url: rssUrl.trim(),
           name: feedName.trim()
@@ -183,6 +210,10 @@ export default function Feed({ onContentSelect }: FeedProps) {
         await fetchSubscriptions();
         setTimeout(() => setSuccess(null), 3000);
       } else {
+        if (res.status === 401) {
+          handleAuthError();
+          return;
+        }
         const errorText = await res.text();
         console.error('Error response:', errorText);
         let errorData;
@@ -210,7 +241,7 @@ export default function Feed({ onContentSelect }: FeedProps) {
     try {
       const res = await fetch(`${API_BASE}/api/feeds/subscriptions/${subscriptionId}`, {
         method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' }
+        headers: { 'Content-Type': 'application/json', ...authHeaders() }
       });
       
       if (res.ok) {
@@ -219,6 +250,10 @@ export default function Feed({ onContentSelect }: FeedProps) {
         await fetchSubscriptions();
         setTimeout(() => setSuccess(null), 3000);
       } else {
+        if (res.status === 401) {
+          handleAuthError();
+          return;
+        }
         throw new Error(`Failed to delete feed: ${res.status}`);
       }
     } catch (err: any) {
@@ -232,7 +267,7 @@ export default function Feed({ onContentSelect }: FeedProps) {
     try {
       const res = await fetch(`${API_BASE}/api/feeds/subscriptions/${subscriptionId}/toggle`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({ is_active: !currentStatus })
       });
       
@@ -243,6 +278,10 @@ export default function Feed({ onContentSelect }: FeedProps) {
         await fetchArticles();
         setTimeout(() => setSuccess(null), 3000);
       } else {
+        if (res.status === 401) {
+          handleAuthError();
+          return;
+        }
         setError('Failed to update feed status');
         setTimeout(() => setError(null), 3000);
       }
@@ -255,6 +294,7 @@ export default function Feed({ onContentSelect }: FeedProps) {
 
   const handleArticleClick = (article: Article) => {
     setSelectedArticle(article);
+    setSummary(null); // Clear summary when selecting new article
     // Notify parent component about content selection for journaling
     if (onContentSelect) {
       onContentSelect({
@@ -263,6 +303,46 @@ export default function Feed({ onContentSelect }: FeedProps) {
         url: article.url,
         id: article.id
       });
+    }
+  };
+
+  const handleSummarize = async () => {
+    if (!selectedArticle) return;
+    
+    setSummarizing(true);
+    setSummary(null);
+    setError(null);
+
+    try {
+      const articleText = selectedArticle.content || selectedArticle.snippet || '';
+      if (!articleText.trim()) {
+        throw new Error('No content available to summarize');
+      }
+
+      const prompt = `Please provide a concise summary of the following article in 2-3 paragraphs. Focus on the main points and key information:\n\nTitle: ${selectedArticle.title}\n\nContent:\n${articleText.slice(0, 4000)}`;
+
+      const response = await fetch(`${API_BASE}/api/chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          message: prompt,
+          conversation_history: []
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to summarize article: ${response.status}`);
+      }
+
+      const data = await response.json();
+      setSummary(data.response || 'Unable to generate summary');
+    } catch (err: any) {
+      console.error('Failed to summarize:', err);
+      setError(err.message || 'Failed to summarize article');
+    } finally {
+      setSummarizing(false);
     }
   };
 
@@ -524,19 +604,27 @@ export default function Feed({ onContentSelect }: FeedProps) {
                 <p className="text-gray-600 dark:text-gray-400 mt-2">{selectedArticle.source} • {selectedArticle.date} • {selectedArticle.type.toUpperCase()}</p>
               </div>
               <div className="flex items-center gap-2">
-                <button className="px-3 py-1 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 rounded">Summarize</button>
                 <button 
-                  onClick={() => onContentSelect && onContentSelect({
-                    type: 'rss',
-                    title: selectedArticle.title,
-                    url: selectedArticle.url,
-                    id: selectedArticle.id
-                  })}
-                  className="px-3 py-1 text-sm bg-green-600 text-white rounded hover:bg-green-700"
+                  onClick={handleSummarize}
+                  disabled={summarizing || !selectedArticle}
+                  className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
                 >
-                  Link to Journal
+                  {summarizing ? (
+                    <>
+                      <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                      Summarizing...
+                    </>
+                  ) : (
+                    'Summarize'
+                  )}
                 </button>
-                <button onClick={() => setSelectedArticle(null)} className="p-2 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded">
+                <button onClick={() => {
+                  setSelectedArticle(null);
+                  setSummary(null);
+                }} className="p-2 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded">
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                   </svg>
@@ -546,6 +634,17 @@ export default function Feed({ onContentSelect }: FeedProps) {
           </div>
           <div className="flex-1 p-6 overflow-auto">
             <div className="prose prose-gray dark:prose-invert max-w-none">
+              {summary && (
+                <div className="mb-6">
+                  <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-3">Summary</h3>
+                  <div className="p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800">
+                    <p className="text-gray-700 dark:text-gray-300 leading-relaxed whitespace-pre-wrap">
+                      {summary}
+                    </p>
+                  </div>
+                </div>
+              )}
+              
               {selectedArticle.content ? (
                 <div className="text-gray-700 dark:text-gray-300 leading-relaxed whitespace-pre-wrap">
                   {selectedArticle.content}

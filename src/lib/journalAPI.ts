@@ -21,14 +21,24 @@ export interface JournalUpdate {
 
 const API_BASE_URL = 'http://localhost:8000/api';
 
+function getAccessToken(): string | null {
+  try {
+    return typeof window !== 'undefined' ? localStorage.getItem('readnest_token') : null;
+  } catch {
+    return null;
+  }
+}
+
 class JournalAPI {
   private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
     const url = `${API_BASE_URL}${endpoint}`;
     
     try {
+      const token = getAccessToken();
       const response = await fetch(url, {
         headers: {
           'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
           ...options.headers,
         },
         ...options,

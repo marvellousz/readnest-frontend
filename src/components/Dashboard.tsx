@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Navbar from './Navbar';
 import Feed from './Feed';
 import DocumentUpload from './DocumentUpload';
@@ -9,13 +9,21 @@ import JournalSidebar from './JournalSidebar';
 import Research from './Research';
 import Notes from './Notes';
 import AIAssistant from './AIAssistant';
+import ProfileSettings from './ProfileSettings';
+import { auth } from '@/lib/auth';
+import { useRouter } from 'next/navigation';
 
 export default function Dashboard() {
+  const router = useRouter();
+  useEffect(() => {
+    const token = auth.getToken();
+    if (!token) router.push('/auth/login');
+  }, [router]);
   const [activeSection, setActiveSection] = useState('feed');
   const [activeTab, setActiveTab] = useState<'rss' | 'pdf'>('rss');
   const [isJournalOpen, setIsJournalOpen] = useState(false);
   const [currentContent, setCurrentContent] = useState<{
-    type: 'rss' | 'pdf';
+    type: 'rss' | 'pdf' | 'research' | 'assistant';
     title: string;
     url?: string;
     id?: string;
@@ -23,6 +31,14 @@ export default function Dashboard() {
 
   const handleToggleJournal = () => {
     setIsJournalOpen(prev => !prev);
+  };
+
+  const handleSectionChange = (section: string) => {
+    setActiveSection(section);
+    // Close journal sidebar when switching sections (except when switching to notes, feed, research, or assistant)
+    if (section !== 'feed' && section !== 'notes' && section !== 'research' && section !== 'assistant') {
+      setIsJournalOpen(false);
+    }
   };
 
   const renderMainContent = () => {
@@ -36,7 +52,9 @@ export default function Dashboard() {
       case 'notes':
         return <Notes />;
       case 'assistant':
-        return <AIAssistant />;
+        return <AIAssistant onContentSelect={setCurrentContent} />;
+      case 'account':
+        return <ProfileSettings />;
       default:
         return (
           <div className="p-6">
@@ -56,7 +74,7 @@ export default function Dashboard() {
       {/* Sticky Top Navbar */}
       <Navbar
         activeSection={activeSection}
-        onSectionChange={setActiveSection}
+        onSectionChange={handleSectionChange}
       />
 
       {/* Main Content Area */}
@@ -70,12 +88,14 @@ export default function Dashboard() {
         )}
 
         {/* Main Content */}
-        <main className="flex-1 bg-white dark:bg-gray-900">
-          {renderMainContent()}
+        <main className="flex-1 bg-white dark:bg-gray-900 overflow-hidden flex flex-col">
+          <div key={activeSection} className="flex-1 overflow-hidden">
+            {renderMainContent()}
+          </div>
         </main>
 
-        {/* Right-side single stacked icon rail - only show when sidebar is closed */}
-        {!isJournalOpen && (
+        {/* Right-side single stacked icon rail - only show when sidebar is closed and not on account */}
+        {!isJournalOpen && activeSection !== 'account' && (
           <div className="flex flex-col items-center gap-2 p-2 bg-white dark:bg-gray-900 border-l border-gray-200 dark:border-gray-700">
             {/* Journal icon */}
             <button
@@ -91,11 +111,13 @@ export default function Dashboard() {
         )}
 
         {/* Sidebars (render only expanded drawers) */}
-        <JournalSidebar
-          isOpen={isJournalOpen}
-          currentContent={currentContent}
-          onClose={() => setIsJournalOpen(false)}
-        />
+        {(activeSection === 'feed' || activeSection === 'notes' || activeSection === 'research' || activeSection === 'assistant') && (
+          <JournalSidebar
+            isOpen={isJournalOpen}
+            currentContent={currentContent}
+            onClose={() => setIsJournalOpen(false)}
+          />
+        )}
       </div>
     </div>
   );

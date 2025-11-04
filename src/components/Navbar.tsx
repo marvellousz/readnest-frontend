@@ -1,6 +1,8 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
+import { useRouter } from 'next/navigation';
+import { auth } from '@/lib/auth';
 
 interface NavbarProps {
   activeSection: string;
@@ -12,7 +14,19 @@ export default function Navbar({
   onSectionChange
 }: NavbarProps) {
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const [user, setUser] = useState<{ id: string; email: string } | null>(null);
+  const [userInitial, setUserInitial] = useState('U');
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const router = useRouter();
+
+  useEffect(() => {
+    // Only access localStorage on the client side to avoid hydration mismatch
+    const currentUser = auth.getUser();
+    setUser(currentUser);
+    if (currentUser) {
+      setUserInitial(auth.getUserInitial(currentUser.email));
+    }
+  }, []);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -70,8 +84,13 @@ export default function Navbar({
             className="flex items-center gap-2 p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
           >
             <div className="w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center">
-              <span className="text-sm font-medium text-white">U</span>
+              <span className="text-sm font-medium text-white">{userInitial}</span>
             </div>
+            {user && (
+              <span className="hidden md:block text-sm text-gray-700 dark:text-gray-300">
+                {user.email}
+              </span>
+            )}
             <svg
               className={`h-4 w-4 text-gray-500 dark:text-gray-400 transition-transform ${
                 isDropdownOpen ? 'rotate-180' : ''
@@ -92,14 +111,23 @@ export default function Navbar({
           {/* Dropdown Menu */}
           {isDropdownOpen && (
             <div className="absolute right-0 mt-2 w-48 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-50">
-              <button className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
-                Profile
-              </button>
-              <button className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
-                Settings
+              {user && (
+                <div className="px-4 py-2 border-b border-gray-200 dark:border-gray-700">
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">Signed in as</p>
+                  <p className="text-sm font-medium text-gray-900 dark:text-white truncate">{user.email}</p>
+                </div>
+              )}
+              <button 
+                onClick={() => { setIsDropdownOpen(false); onSectionChange('account'); }}
+                className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+              >
+                Profile & Settings
               </button>
               <hr className="my-1 border-gray-200 dark:border-gray-700" />
-              <button className="w-full text-left px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-gray-100 dark:hover:bg-gray-700">
+              <button 
+                onClick={() => { setIsDropdownOpen(false); auth.logout(); router.push('/auth/login'); }} 
+                className="w-full text-left px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-gray-100 dark:hover:bg-gray-700"
+              >
                 Logout
               </button>
             </div>

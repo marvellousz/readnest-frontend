@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useCallback, useEffect } from 'react';
+import { auth } from '@/lib/auth';
 
 interface Document {
   id: string;
@@ -33,6 +34,8 @@ export default function DocumentUpload({ onContentSelect }: DocumentUploadProps)
   const [success, setSuccess] = useState<string | null>(null);
   const [editingDocument, setEditingDocument] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
+  const [summary, setSummary] = useState<string | null>(null);
+  const [summarizing, setSummarizing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Load documents from localStorage
@@ -73,6 +76,9 @@ export default function DocumentUpload({ onContentSelect }: DocumentUploadProps)
       setError('Some files were skipped. Only PDF, DOC, and DOCX files under 10MB are allowed.');
     }
 
+    let successCount = 0;
+    let errorCount = 0;
+
     for (const file of validFiles) {
       const documentId = `doc_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       const documentType = file.type.includes('pdf') ? 'pdf' : 'doc';
@@ -86,47 +92,73 @@ export default function DocumentUpload({ onContentSelect }: DocumentUploadProps)
         status: 'uploading'
       };
 
-      const updatedDocs = [newDocument, ...documents];
-      setDocuments(updatedDocs);
-      saveDocuments(updatedDocs);
+      // Use functional update to get latest documents state
+      setDocuments(prevDocs => {
+        const updatedDocs = [newDocument, ...prevDocs];
+        saveDocuments(updatedDocs);
+        return updatedDocs;
+      });
 
       try {
         const formData = new FormData();
         formData.append('file', file);
         formData.append('name', file.name);
 
+        const token = auth.getToken();
+        const headers: HeadersInit = {};
+        if (token) {
+          headers['Authorization'] = `Bearer ${token}`;
+        }
+
         const response = await fetch(`${API_BASE}/api/documents/upload`, {
           method: 'POST',
+          headers,
           body: formData,
         });
 
         if (response.ok) {
           const result = await response.json();
-          const finalDocs = updatedDocs.map(doc => 
-            doc.id === documentId 
-              ? { ...doc, status: 'ready', content: result.content }
-              : doc
-          );
-          setDocuments(finalDocs);
-          saveDocuments(finalDocs);
+          setDocuments(prevDocs => {
+            const finalDocs = prevDocs.map(doc => 
+              doc.id === documentId 
+                ? { ...doc, status: 'ready', content: result.content, id: result.id }
+                : doc
+            );
+            saveDocuments(finalDocs);
+            return finalDocs;
+          });
+          successCount++;
         } else {
-          throw new Error(`Upload failed: ${response.statusText}`);
+          const errorText = await response.text();
+          console.error('Upload error response:', response.status, errorText);
+          let errorMessage = `Upload failed: ${response.status}`;
+          try {
+            const errorJson = JSON.parse(errorText);
+            errorMessage = errorJson.detail || errorMessage;
+          } catch {
+            errorMessage = errorText || errorMessage;
+          }
+          throw new Error(errorMessage);
         }
       } catch (err: any) {
-        const errorDocs = updatedDocs.map(doc => 
-          doc.id === documentId 
-            ? { ...doc, status: 'error' }
-            : doc
-        );
-        setDocuments(errorDocs);
-        saveDocuments(errorDocs);
+        console.error('Upload error:', err);
+        setDocuments(prevDocs => {
+          const errorDocs = prevDocs.map(doc => 
+            doc.id === documentId 
+              ? { ...doc, status: 'error' }
+              : doc
+          );
+          saveDocuments(errorDocs);
+          return errorDocs;
+        });
+        errorCount++;
         setError(`Failed to upload ${file.name}: ${err.message}`);
       }
     }
 
     setIsUploading(false);
-    if (validFiles.length > 0) {
-      setSuccess(`Successfully uploaded ${validFiles.length} document(s)`);
+    if (successCount > 0) {
+      setSuccess(`Successfully uploaded ${successCount} document(s)`);
       setTimeout(() => setSuccess(null), 3000);
     }
   }, []);
@@ -245,6 +277,7 @@ export default function DocumentUpload({ onContentSelect }: DocumentUploadProps)
   const handleDocumentClick = (document: Document) => {
     if (document.status === 'ready') {
       setSelectedDocument(document);
+      setSummary(null); // Clear summary when selecting new document
       // Notify parent component about content selection for journaling
       if (onContentSelect) {
         onContentSelect({
@@ -253,6 +286,46 @@ export default function DocumentUpload({ onContentSelect }: DocumentUploadProps)
           id: document.id
         });
       }
+    }
+  };
+
+  const handleSummarize = async () => {
+    if (!selectedDocument) return;
+    
+    setSummarizing(true);
+    setSummary(null);
+    setError(null);
+
+    try {
+      const documentText = selectedDocument.content || '';
+      if (!documentText.trim()) {
+        throw new Error('No content available to summarize');
+      }
+
+      const prompt = `Please provide a concise summary of the following document in 2-3 paragraphs. Focus on the main points and key information:\n\nTitle: ${selectedDocument.name}\n\nContent:\n${documentText.slice(0, 4000)}`;
+
+      const response = await fetch(`${API_BASE}/api/chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          message: prompt,
+          conversation_history: []
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to summarize document: ${response.status}`);
+      }
+
+      const data = await response.json();
+      setSummary(data.response || 'Unable to generate summary');
+    } catch (err: any) {
+      console.error('Failed to summarize:', err);
+      setError(err.message || 'Failed to summarize document');
+    } finally {
+      setSummarizing(false);
     }
   };
 
@@ -507,11 +580,28 @@ export default function DocumentUpload({ onContentSelect }: DocumentUploadProps)
                 </p>
               </div>
               <div className="flex items-center gap-2">
-                <button className="px-3 py-1 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 rounded">
-                  Summarize
+                <button 
+                  onClick={handleSummarize}
+                  disabled={summarizing || !selectedDocument || !selectedDocument.content}
+                  className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                >
+                  {summarizing ? (
+                    <>
+                      <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                      Summarizing...
+                    </>
+                  ) : (
+                    'Summarize'
+                  )}
                 </button>
                 <button 
-                  onClick={() => setSelectedDocument(null)} 
+                  onClick={() => {
+                    setSelectedDocument(null);
+                    setSummary(null);
+                  }} 
                   className="p-2 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded"
                 >
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -523,6 +613,17 @@ export default function DocumentUpload({ onContentSelect }: DocumentUploadProps)
           </div>
           <div className="flex-1 p-6 overflow-auto">
             <div className="prose prose-gray dark:prose-invert max-w-none">
+              {summary && (
+                <div className="mb-6">
+                  <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-3">Summary</h3>
+                  <div className="p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800">
+                    <p className="text-gray-700 dark:text-gray-300 leading-relaxed whitespace-pre-wrap">
+                      {summary}
+                    </p>
+                  </div>
+                </div>
+              )}
+              
               {selectedDocument.content ? (
                 <div className="text-gray-700 dark:text-gray-300 leading-relaxed whitespace-pre-wrap">
                   {selectedDocument.content}

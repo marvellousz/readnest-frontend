@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { auth } from '@/lib/auth';
 
 interface Message {
   id: string;
@@ -7,15 +8,24 @@ interface Message {
   timestamp: Date;
 }
 
+interface AIAssistantProps {
+  onContentSelect?: (content: {
+    type: 'assistant';
+    title: string;
+    url?: string;
+    id?: string;
+  }) => void;
+}
+
 const API_BASE = process.env.NODE_ENV === 'production' 
   ? 'https://readnest-backend.vercel.app' 
   : 'http://localhost:8000';
 
-export default function AIAssistant() {
+export default function AIAssistant({ onContentSelect }: AIAssistantProps) {
   const [messages, setMessages] = useState<Message[]>([
     {
       id: '1',
-      content: 'Hello! I\'m your AI assistant. I can help you with questions, explanations, creative tasks, and casual conversation. How can I assist you today?',
+      content: 'Hello! I\'m your AI assistant. I can help you with questions, explanations, creative tasks, and casual conversation. I also have access to your notes and journal entries, so I can reference them when relevant to help answer your questions. How can I assist you today?',
       role: 'assistant',
       timestamp: new Date()
     }
@@ -52,10 +62,14 @@ export default function AIAssistant() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...(auth.getToken() ? { Authorization: `Bearer ${auth.getToken()}` } : {}),
         },
         body: JSON.stringify({
           message: inputMessage.trim(),
-          conversation_history: messages.slice(-10) // Send last 10 messages for context
+          conversation_history: messages.slice(-10).map(msg => ({
+            role: msg.role,
+            content: msg.content
+          }))
         }),
       });
 
@@ -98,7 +112,7 @@ export default function AIAssistant() {
     setMessages([
       {
         id: '1',
-        content: 'Hello! I\'m your AI assistant. I can help you with questions, explanations, creative tasks, and casual conversation. How can I assist you today?',
+        content: 'Hello! I\'m your AI assistant. I can help you with questions, explanations, creative tasks, and casual conversation. I also have access to your notes and journal entries, so I can reference them when relevant to help answer your questions. How can I assist you today?',
         role: 'assistant',
         timestamp: new Date()
       }
@@ -106,9 +120,9 @@ export default function AIAssistant() {
   };
 
   return (
-    <div className="h-full flex flex-col bg-white dark:bg-gray-900">
+    <div className="flex-1 flex flex-col bg-white dark:bg-gray-900 overflow-hidden">
       {/* Header */}
-      <div className="p-4 border-b border-gray-200 dark:border-gray-700">
+      <div className="flex-shrink-0 p-4 border-b border-gray-200 dark:border-gray-700">
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-xl font-bold text-gray-900 dark:text-white">AI Assistant</h2>
@@ -123,51 +137,55 @@ export default function AIAssistant() {
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {messages.map((message) => (
-          <div
-            key={message.id}
-            className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
-          >
-            <div
-              className={`max-w-[80%] rounded-lg px-4 py-2 ${
-                message.role === 'user'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-white'
-              }`}
-            >
-              <p className="whitespace-pre-wrap">{message.content}</p>
-              <p className={`text-xs mt-1 ${
-                message.role === 'user' 
-                  ? 'text-blue-100' 
-                  : 'text-gray-500 dark:text-gray-400'
-              }`}>
-                {message.timestamp.toLocaleTimeString()}
-              </p>
-            </div>
-          </div>
-        ))}
-        
-        {isLoading && (
-          <div className="flex justify-start">
-            <div className="bg-gray-100 dark:bg-gray-800 rounded-lg px-4 py-2">
-              <div className="flex items-center space-x-2">
-                <div className="flex space-x-1">
-                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
-                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
-                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+      <div className="flex-1 overflow-y-auto min-h-0">
+        <div className="p-4 space-y-4 min-h-full flex flex-col">
+          <div className="flex-1" />
+          <div className="space-y-4">
+            {messages.map((message) => (
+              <div
+                key={message.id}
+                className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+              >
+                <div
+                  className={`max-w-[80%] rounded-lg px-4 py-2 ${
+                    message.role === 'user'
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-white'
+                  }`}
+                >
+                  <p className="whitespace-pre-wrap">{message.content}</p>
+                  <p className={`text-xs mt-1 ${
+                    message.role === 'user' 
+                      ? 'text-blue-100' 
+                      : 'text-gray-500 dark:text-gray-400'
+                  }`}>
+                    {message.timestamp.toLocaleTimeString()}
+                  </p>
                 </div>
-                <span className="text-sm text-gray-500 dark:text-gray-400">AI is thinking...</span>
               </div>
-            </div>
+            ))}
+            
+            {isLoading && (
+              <div className="flex justify-start">
+                <div className="bg-gray-100 dark:bg-gray-800 rounded-lg px-4 py-2">
+                  <div className="flex items-center space-x-2">
+                    <div className="flex space-x-1">
+                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
+                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
+                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+                    </div>
+                    <span className="text-sm text-gray-500 dark:text-gray-400">AI is thinking...</span>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
-        )}
-        
-        <div ref={messagesEndRef} />
+          <div ref={messagesEndRef} />
+        </div>
       </div>
 
       {/* Input */}
-      <div className="p-4 border-t border-gray-200 dark:border-gray-700">
+      <div className="flex-shrink-0 p-4 border-t border-gray-200 dark:border-gray-700">
         <div className="flex gap-2">
           <textarea
             value={inputMessage}

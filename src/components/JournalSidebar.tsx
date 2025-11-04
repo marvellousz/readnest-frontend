@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
+import { auth } from '@/lib/auth';
 
 
 interface JournalEntry {
@@ -12,7 +13,7 @@ interface JournalEntry {
   word_count: number;
   keywords: string[];
   related_content?: {
-    type: 'rss' | 'pdf';
+    type: 'rss' | 'pdf' | 'research';
     title: string;
     url?: string;
     id?: string;
@@ -23,13 +24,14 @@ interface JournalSidebarProps {
   isOpen: boolean;
   onClose: () => void;
   currentContent?: {
-    type: 'rss' | 'pdf';
+    type: 'rss' | 'pdf' | 'research';
     title: string;
     url?: string;
     id?: string;
   } | null;
 }
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
 const STORAGE_KEY = 'readnest_journal_entries';
 
 export default function JournalSidebar({ isOpen, onClose, currentContent }: JournalSidebarProps) {
@@ -42,32 +44,48 @@ export default function JournalSidebar({ isOpen, onClose, currentContent }: Jour
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
   const saveTimerRef = useRef<number | null>(null);
 
-  // Load journal entries from localStorage
-  const loadJournalEntries = () => {
+  // Load journal entries from API
+  const loadJournalEntries = async () => {
     try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        const entries = JSON.parse(stored);
-        setJournalEntries(entries);
-        if (entries.length > 0 && !activeJournalId) {
-          setActiveJournalId(entries[0].id);
-          setJournalContent(entries[0].content || '');
-          setJournalTitle(entries[0].title);
+      const token = auth.getToken();
+      if (!token) return;
+      
+      const headers: HeadersInit = {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      };
+
+      const response = await fetch(`${API_BASE}/api/journals`, { headers });
+      if (!response.ok) {
+        if (response.status === 401) {
+          return;
         }
+        throw new Error(`Failed to fetch entries: ${response.status}`);
+      }
+
+      const entries = await response.json();
+      const normalizedEntries = Array.isArray(entries) ? entries.map((entry: any) => ({
+        ...entry,
+        keywords: Array.isArray(entry.keywords) ? entry.keywords : Object.keys(entry.keywords || {}),
+      })) : [];
+      
+      setJournalEntries(normalizedEntries);
+      if (normalizedEntries.length > 0 && !activeJournalId) {
+        setActiveJournalId(normalizedEntries[0].id);
+        setJournalContent(normalizedEntries[0].content || '');
+        setJournalTitle(normalizedEntries[0].title);
       }
     } catch (error) {
       console.error('Failed to load journal entries:', error);
     }
   };
 
-  // Save journal entries to localStorage
-  const saveJournalEntries = (entries: JournalEntry[]) => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
-    } catch (error) {
-      console.error('Failed to save journal entries:', error);
+  // Load entries on mount and when sidebar opens
+  useEffect(() => {
+    if (isOpen) {
+      loadJournalEntries();
     }
-  };
+  }, [isOpen]);
 
   // Extract keywords from text
   const extractKeywords = (text: string): string[] => {
@@ -91,86 +109,141 @@ export default function JournalSidebar({ isOpen, onClose, currentContent }: Jour
   };
 
   // Create new journal entry
-  const createJournalEntry = (linkToCurrentContent = false) => {
-    let title: string;
-    let content: string;
-    let relatedContent = undefined;
-    
-    if (linkToCurrentContent && currentContent) {
-      // Create a linked entry
-      title = `Notes on: ${currentContent.title}`;
-      content = `# ${currentContent.title}\n\n**Source:** ${currentContent.type.toUpperCase()}\n**Date:** ${new Date().toLocaleDateString()}\n${currentContent.url ? `**URL:** ${currentContent.url}\n` : ''}\n---\n\n`;
-      relatedContent = currentContent;
-    } else {
-      // Create a standalone entry
-      title = `Journal Entry ${new Date().toLocaleDateString()}`;
-      content = '';
-      relatedContent = undefined;
+  const createJournalEntry = async (linkToCurrentContent = false) => {
+    try {
+      const token = auth.getToken();
+      if (!token) return;
+
+      let title: string;
+      let content: string;
+      let relatedContent = undefined;
+      
+      if (linkToCurrentContent && currentContent) {
+        // Create a linked entry
+        title = `Notes on: ${currentContent.title}`;
+        content = `# ${currentContent.title}\n\n**Source:** ${currentContent.type.toUpperCase()}\n**Date:** ${new Date().toLocaleDateString()}\n${currentContent.url ? `**URL:** ${currentContent.url}\n` : ''}\n---\n\n`;
+        relatedContent = currentContent;
+      } else {
+        // Create a standalone entry
+        title = `Journal Entry ${new Date().toLocaleDateString()}`;
+        content = '';
+        relatedContent = undefined;
+      }
+
+      const headers: HeadersInit = {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      };
+
+      const response = await fetch(`${API_BASE}/api/journals`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ title, content }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to create entry: ${response.status}`);
+      }
+
+      const newEntry = await response.json();
+      // Normalize keywords
+      const normalizedEntry = {
+        ...newEntry,
+        keywords: Array.isArray(newEntry.keywords) ? newEntry.keywords : Object.keys(newEntry.keywords || {}),
+        related_content: relatedContent,
+      };
+
+      // Reload entries to get the latest from server
+      await loadJournalEntries();
+      setActiveJournalId(normalizedEntry.id);
+      setJournalContent(normalizedEntry.content);
+      setJournalTitle(normalizedEntry.title);
+      setJournalStatus('New entry created');
+      setTimeout(() => setJournalStatus(''), 2000);
+    } catch (error) {
+      console.error('Failed to create entry:', error);
+      setJournalStatus('Failed to create entry');
+      setTimeout(() => setJournalStatus(''), 2000);
     }
-    
-    const newEntry: JournalEntry = {
-      id: `journal_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-      title,
-      content,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      word_count: content.split(/\s+/).length,
-      keywords: extractKeywords(content),
-      related_content: relatedContent
-    };
-    
-    const updatedEntries = [newEntry, ...journalEntries];
-    setJournalEntries(updatedEntries);
-    saveJournalEntries(updatedEntries);
-    setActiveJournalId(newEntry.id);
-    setJournalContent(newEntry.content);
-    setJournalTitle(newEntry.title);
-    setJournalStatus('New entry created');
-    setTimeout(() => setJournalStatus(''), 2000);
   };
 
   // Save current journal entry
-  const saveJournalEntry = () => {
+  const saveJournalEntry = async () => {
     if (!activeJournalId) return;
     
-    const updatedEntries = journalEntries.map(entry => {
-      if (entry.id === activeJournalId) {
-        return {
-          ...entry,
+    try {
+      const token = auth.getToken();
+      if (!token) return;
+
+      const headers: HeadersInit = {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      };
+
+      const response = await fetch(`${API_BASE}/api/journals/${activeJournalId}`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({
           title: journalTitle,
           content: journalContent,
-          updated_at: new Date().toISOString(),
-          word_count: journalContent.split(/\s+/).length,
-          keywords: extractKeywords(journalContent)
-        };
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to save entry: ${response.status}`);
       }
-      return entry;
-    });
-    
-    setJournalEntries(updatedEntries);
-    saveJournalEntries(updatedEntries);
-    setJournalStatus('Saved');
-    setTimeout(() => setJournalStatus(''), 2000);
+
+      // Reload entries to get updated data from server
+      await loadJournalEntries();
+      setJournalStatus('Saved');
+      setTimeout(() => setJournalStatus(''), 2000);
+    } catch (error) {
+      console.error('Failed to save entry:', error);
+      setJournalStatus('Failed to save');
+      setTimeout(() => setJournalStatus(''), 2000);
+    }
   };
 
   // Delete journal entry
-  const deleteJournalEntry = (entryId: string) => {
+  const deleteJournalEntry = async (entryId: string) => {
     if (!confirm('Are you sure you want to delete this journal entry?')) {
       return;
     }
     
-    const updatedEntries = journalEntries.filter(entry => entry.id !== entryId);
-    setJournalEntries(updatedEntries);
-    saveJournalEntries(updatedEntries);
-    
-    if (activeJournalId === entryId) {
-      setActiveJournalId(null);
-      setJournalContent('');
-      setJournalTitle('');
+    try {
+      const token = auth.getToken();
+      if (!token) return;
+
+      const headers: HeadersInit = {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      };
+
+      const response = await fetch(`${API_BASE}/api/journals/${entryId}`, {
+        method: 'DELETE',
+        headers,
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to delete entry: ${response.status}`);
+      }
+
+      // Reload entries from server
+      await loadJournalEntries();
+      
+      if (activeJournalId === entryId) {
+        setActiveJournalId(null);
+        setJournalContent('');
+        setJournalTitle('');
+      }
+      
+      setJournalStatus('Entry deleted');
+      setTimeout(() => setJournalStatus(''), 2000);
+    } catch (error) {
+      console.error('Failed to delete entry:', error);
+      setJournalStatus('Failed to delete');
+      setTimeout(() => setJournalStatus(''), 2000);
     }
-    
-    setJournalStatus('Entry deleted');
-    setTimeout(() => setJournalStatus(''), 2000);
   };
 
   // Auto-save functionality
@@ -191,11 +264,6 @@ export default function JournalSidebar({ isOpen, onClose, currentContent }: Jour
       }
     };
   }, [journalContent, journalTitle, activeJournalId]);
-
-  // Load entries on mount
-  useEffect(() => {
-    loadJournalEntries();
-  }, []);
 
   // Filter entries based on search
   const filteredEntries = journalEntries.filter(entry =>
@@ -348,6 +416,8 @@ export default function JournalSidebar({ isOpen, onClose, currentContent }: Jour
                         <span className={`text-xs px-1 py-0.5 rounded ${
                           entry.related_content.type === 'rss' 
                             ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300'
+                            : entry.related_content.type === 'research'
+                            ? 'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300'
                             : 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300'
                         }`}>
                           {entry.related_content.type.toUpperCase()}
@@ -406,6 +476,8 @@ export default function JournalSidebar({ isOpen, onClose, currentContent }: Jour
                   <span className={`text-xs px-1 py-0.5 rounded mt-1 inline-block ${
                     entry.related_content.type === 'rss' 
                       ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300'
+                      : entry.related_content.type === 'research'
+                      ? 'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300'
                       : 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300'
                   }`}>
                     {entry.related_content.type.toUpperCase()}

@@ -97,7 +97,7 @@ export default function Research() {
   };
 
   return (
-    <div className="p-6 h-full overflow-y-auto">
+    <div className="flex-1 overflow-y-auto p-6">
       <div className="max-w-4xl mx-auto">
         {/* Simple Search Section */}
         <div className="mb-8">

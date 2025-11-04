@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { auth } from '@/lib/auth';
 
 // Define the JournalEntry interface inline to avoid import issues
 type JournalEntry = {
@@ -8,7 +9,7 @@ type JournalEntry = {
   created_at: string;
   updated_at: string;
   word_count: number;
-  keywords: string[];
+  keywords?: { [key: string]: number } | string[];
   related_content?: {
     type: 'rss' | 'pdf';
     title: string;
@@ -21,6 +22,14 @@ const API_BASE = process.env.NODE_ENV === 'production'
   ? 'https://readnest-backend.vercel.app' 
   : 'http://localhost:8000';
 
+// Helper function to normalize keywords
+const normalizeKeywords = (keywords: { [key: string]: number } | string[] | undefined): string[] => {
+  if (!keywords) return [];
+  if (Array.isArray(keywords)) return keywords;
+  // If it's an object, convert to array of keys
+  return Object.keys(keywords);
+};
+
 export default function Notes() {
   const [entries, setEntries] = useState<JournalEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -28,6 +37,10 @@ export default function Notes() {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedEntry, setSelectedEntry] = useState<JournalEntry | null>(null);
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
+  const [isEditing, setIsEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState('');
+  const [editContent, setEditContent] = useState('');
+  const [saving, setSaving] = useState(false);
 
   // Ensure entries is always an array
   const safeEntries = Array.isArray(entries) ? entries : [];
@@ -37,16 +50,33 @@ export default function Notes() {
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch(`${API_BASE}/api/journals`);
+      const token = auth.getToken();
+      const headers: HeadersInit = {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      };
+
+      const response = await fetch(`${API_BASE}/api/journals`, { headers });
       if (!response.ok) {
+        if (response.status === 401) {
+          // Redirect to login if unauthorized
+          auth.logout();
+          window.location.href = '/auth/login';
+          return;
+        }
         throw new Error(`Failed to fetch entries: ${response.status}`);
       }
       const data = await response.json();
       console.log('Fetched journal data:', data);
       // The API returns List[JournalEntry] directly, not wrapped in an object
       const entriesData = Array.isArray(data) ? data : [];
-      console.log('Processed entries:', entriesData);
-      setEntries(entriesData);
+      // Normalize keywords for each entry
+      const normalizedEntries = entriesData.map((entry: any) => ({
+        ...entry,
+        keywords: normalizeKeywords(entry.keywords),
+      }));
+      console.log('Processed entries:', normalizedEntries);
+      setEntries(normalizedEntries);
     } catch (err: any) {
       console.error('Error fetching entries:', err);
       setError('Failed to load journal entries. Please try again.');
@@ -61,21 +91,105 @@ export default function Notes() {
     fetchEntries();
   }, []);
 
-  // Refresh entries every 5 seconds to catch new entries
+  // Update edit state when selected entry changes
   useEffect(() => {
-    const interval = setInterval(() => {
-      fetchEntries();
-    }, 5000);
+    if (selectedEntry) {
+      setEditTitle(selectedEntry.title);
+      setEditContent(selectedEntry.content);
+      setIsEditing(false);
+    }
+  }, [selectedEntry]);
 
-    return () => clearInterval(interval);
-  }, []);
+  // Save entry function
+  const saveEntry = async () => {
+    if (!selectedEntry || !editTitle.trim()) return;
+    
+    setSaving(true);
+    try {
+      const token = auth.getToken();
+      if (!token) return;
+
+      const headers: HeadersInit = {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      };
+
+      const response = await fetch(`${API_BASE}/api/journals/${selectedEntry.id}`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({
+          title: editTitle,
+          content: editContent,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to save entry: ${response.status}`);
+      }
+
+      const updatedEntry = await response.json();
+      const normalizedEntry = {
+        ...updatedEntry,
+        keywords: normalizeKeywords(updatedEntry.keywords),
+      };
+
+      // Update entries list
+      setEntries(prevEntries => prevEntries.map(e => e.id === selectedEntry.id ? normalizedEntry : e));
+      setSelectedEntry(normalizedEntry);
+      setIsEditing(false);
+    } catch (err: any) {
+      console.error('Failed to save entry:', err);
+      setError('Failed to save entry');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Delete entry function
+  const deleteEntry = async (entryId: string) => {
+    if (!confirm('Are you sure you want to delete this entry?')) {
+      return;
+    }
+
+    try {
+      const token = auth.getToken();
+      if (!token) return;
+
+      const headers: HeadersInit = {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      };
+
+      const response = await fetch(`${API_BASE}/api/journals/${entryId}`, {
+        method: 'DELETE',
+        headers,
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to delete entry: ${response.status}`);
+      }
+
+      // Remove from entries list
+      setEntries(entries.filter(e => e.id !== entryId));
+      if (selectedEntry?.id === entryId) {
+        setSelectedEntry(null);
+        setIsEditing(false);
+      }
+    } catch (err: any) {
+      console.error('Failed to delete entry:', err);
+      setError('Failed to delete entry');
+    }
+  };
 
   // Filter entries based on search term
-  const filteredEntries = safeEntries.filter(entry =>
-    entry.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    entry.content.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    entry.keywords.some(keyword => keyword.toLowerCase().includes(searchTerm.toLowerCase()))
-  );
+  const filteredEntries = safeEntries.filter(entry => {
+    const keywordsArray = normalizeKeywords(entry.keywords);
+    return (
+      entry.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      entry.content.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      keywordsArray.some(keyword => keyword.toLowerCase().includes(searchTerm.toLowerCase()))
+    );
+  });
 
   const formatDate = (timestamp: string) => {
     return new Date(timestamp).toLocaleDateString('en-US', {
@@ -94,7 +208,7 @@ export default function Notes() {
 
   if (loading) {
     return (
-      <div className="h-full flex items-center justify-center">
+      <div className="flex-1 flex items-center justify-center">
         <div className="text-center">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-4"></div>
           <p className="text-gray-600 dark:text-gray-400">Loading notes...</p>
@@ -105,7 +219,7 @@ export default function Notes() {
 
   if (error) {
     return (
-      <div className="h-full flex items-center justify-center">
+      <div className="flex-1 flex items-center justify-center">
         <div className="text-center">
           <p className="text-red-600 dark:text-red-400 mb-4">{error}</p>
           <button
@@ -120,9 +234,9 @@ export default function Notes() {
   }
 
   return (
-    <div className="h-full flex bg-white dark:bg-gray-900">
+    <div className="flex-1 flex bg-white dark:bg-gray-900 overflow-hidden">
       {/* Notes List */}
-      <div className={`${selectedEntry ? 'w-1/2' : 'w-full'} border-r border-gray-200 dark:border-gray-700 flex flex-col`}>
+      <div className={`${selectedEntry ? 'w-1/2' : 'w-full'} border-r border-gray-200 dark:border-gray-700 flex flex-col overflow-hidden`}>
         {/* Header */}
         <div className="p-4 border-b border-gray-200 dark:border-gray-700">
           <div className="flex items-center justify-between mb-4">
@@ -216,9 +330,9 @@ export default function Notes() {
                       Linked to {entry.related_content.type.toUpperCase()}: {entry.related_content.title}
                     </div>
                   )}
-                  {entry.keywords.length > 0 && (
+                  {normalizeKeywords(entry.keywords).length > 0 && (
                     <div className="flex flex-wrap gap-1 mt-2">
-                      {entry.keywords.map((keyword, index) => (
+                      {normalizeKeywords(entry.keywords).map((keyword, index) => (
                         <span key={index} className="text-xs px-2 py-1 bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 rounded">
                           {keyword}
                         </span>
@@ -249,15 +363,15 @@ export default function Notes() {
                   <div className="text-xs text-gray-500 dark:text-gray-400">
                     {formatDate(entry.created_at)}
                   </div>
-                  {entry.keywords.length > 0 && (
+                  {normalizeKeywords(entry.keywords).length > 0 && (
                     <div className="flex flex-wrap gap-1 mt-2">
-                      {entry.keywords.slice(0, 2).map((keyword, index) => (
+                      {normalizeKeywords(entry.keywords).slice(0, 2).map((keyword, index) => (
                         <span key={index} className="text-xs px-1 py-0.5 bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 rounded">
                           {keyword}
                         </span>
                       ))}
-                      {entry.keywords.length > 2 && (
-                        <span className="text-xs text-gray-500">+{entry.keywords.length - 2}</span>
+                      {normalizeKeywords(entry.keywords).length > 2 && (
+                        <span className="text-xs text-gray-500">+{normalizeKeywords(entry.keywords).length - 2}</span>
                       )}
                     </div>
                   )}
@@ -270,66 +384,137 @@ export default function Notes() {
 
       {/* Selected Entry Details */}
       {selectedEntry && (
-        <div className="w-1/2 flex flex-col">
-          <div className="p-4 border-b border-gray-200 dark:border-gray-700">
-            <div className="flex items-center justify-between">
-              <h2 className="text-xl font-bold text-gray-900 dark:text-white">
-                {selectedEntry.title}
-              </h2>
-              <button
-                onClick={() => setSelectedEntry(null)}
-                className="p-2 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
+        <div className="w-1/2 flex flex-col overflow-hidden">
+          <div className="p-4 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
+            <div className="flex items-center justify-between mb-2 gap-3">
+              {isEditing ? (
+                <input
+                  type="text"
+                  value={editTitle}
+                  onChange={(e) => setEditTitle(e.target.value)}
+                  className="flex-1 text-xl font-bold bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded px-3 py-2 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="Entry title"
+                />
+              ) : (
+                <h2 className="text-xl font-bold text-gray-900 dark:text-white flex-1">
+                  {selectedEntry.title}
+                </h2>
+              )}
+              <div className="flex items-center gap-2 flex-shrink-0">
+                {isEditing ? (
+                  <>
+                    <button
+                      onClick={saveEntry}
+                      disabled={saving || !editTitle.trim()}
+                      className="px-3 py-1 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
+                    >
+                      {saving ? 'Saving...' : 'Save'}
+                    </button>
+                    <button
+                      onClick={() => {
+                        setIsEditing(false);
+                        setEditTitle(selectedEntry.title);
+                        setEditContent(selectedEntry.content);
+                      }}
+                      className="px-3 py-1 bg-gray-600 text-white rounded text-sm hover:bg-gray-700 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      onClick={() => setIsEditing(true)}
+                      className="p-2 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded"
+                      title="Edit entry"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                      </svg>
+                    </button>
+                    <button
+                      onClick={() => deleteEntry(selectedEntry.id)}
+                      className="p-2 text-red-500 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/20 rounded"
+                      title="Delete entry"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                    </button>
+                  </>
+                )}
+                <button
+                  onClick={() => {
+                    setSelectedEntry(null);
+                    setIsEditing(false);
+                  }}
+                  className="p-2 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
             </div>
-            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+            <p className="text-sm text-gray-500 dark:text-gray-400">
               {formatDate(selectedEntry.created_at)}
+              {selectedEntry.updated_at !== selectedEntry.created_at && (
+                <span className="ml-2">• Updated {formatDate(selectedEntry.updated_at)}</span>
+              )}
             </p>
           </div>
           
           <div className="flex-1 p-6 overflow-auto">
-            <div className="prose prose-gray dark:prose-invert max-w-none">
-              <div className="text-gray-700 dark:text-gray-300 leading-relaxed whitespace-pre-wrap">
-                {selectedEntry.content}
-              </div>
-            </div>
-            
-            {selectedEntry.related_content && (
-              <div className="mt-6 p-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg">
-                <h4 className="text-sm font-medium text-blue-900 dark:text-blue-100 mb-2">Linked Content</h4>
-                <p className="text-blue-800 dark:text-blue-200 text-sm">
-                  <strong>{selectedEntry.related_content.type.toUpperCase()}:</strong> {selectedEntry.related_content.title}
-                </p>
-                {selectedEntry.related_content.url && (
-                  <a
-                    href={selectedEntry.related_content.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center mt-2 text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 text-sm"
-                  >
-                    <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                    </svg>
-                    Open Original
-                  </a>
-                )}
-              </div>
-            )}
-            
-            {selectedEntry.keywords.length > 0 && (
-              <div className="mt-6 pt-4 border-t border-gray-200 dark:border-gray-700">
-                <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Keywords</h4>
-                <div className="flex flex-wrap gap-2">
-                  {selectedEntry.keywords.map((keyword, index) => (
-                    <span key={index} className="text-xs px-2 py-1 bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 rounded">
-                      {keyword}
-                    </span>
-                  ))}
+            {isEditing ? (
+              <textarea
+                value={editContent}
+                onChange={(e) => setEditContent(e.target.value)}
+                placeholder="Write your notes here..."
+                className="w-full h-full resize-none border border-gray-300 dark:border-gray-600 rounded-lg p-4 bg-white dark:bg-gray-800 text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+              />
+            ) : (
+              <>
+                <div className="prose prose-gray dark:prose-invert max-w-none">
+                  <div className="text-gray-700 dark:text-gray-300 leading-relaxed whitespace-pre-wrap">
+                    {selectedEntry.content || <span className="text-gray-400 italic">No content</span>}
+                  </div>
                 </div>
-              </div>
+            
+                {selectedEntry.related_content && (
+                  <div className="mt-6 p-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg">
+                    <h4 className="text-sm font-medium text-blue-900 dark:text-blue-100 mb-2">Linked Content</h4>
+                    <p className="text-blue-800 dark:text-blue-200 text-sm">
+                      <strong>{selectedEntry.related_content.type.toUpperCase()}:</strong> {selectedEntry.related_content.title}
+                    </p>
+                    {selectedEntry.related_content.url && (
+                      <a
+                        href={selectedEntry.related_content.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center mt-2 text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 text-sm"
+                      >
+                        <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                        </svg>
+                        Open Original
+                      </a>
+                    )}
+                  </div>
+                )}
+                
+                {normalizeKeywords(selectedEntry.keywords).length > 0 && (
+                  <div className="mt-6 pt-4 border-t border-gray-200 dark:border-gray-700">
+                    <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Keywords</h4>
+                    <div className="flex flex-wrap gap-2">
+                      {normalizeKeywords(selectedEntry.keywords).map((keyword, index) => (
+                        <span key={index} className="text-xs px-2 py-1 bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 rounded">
+                          {keyword}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>
