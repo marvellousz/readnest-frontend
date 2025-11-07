@@ -11,7 +11,6 @@ A modern, privacy-focused reading hub frontend built with Next.js. Manage your j
 - [Usage](#usage)
 - [Deployment](#deployment)
 - [Contributing](#contributing)
-- [License](#license)
 - [Contact](#contact)
 
 ## Overview
