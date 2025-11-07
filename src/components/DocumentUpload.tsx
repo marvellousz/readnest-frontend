@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useCallback, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import { auth } from '@/lib/auth';
 
 interface Document {
@@ -26,6 +27,7 @@ interface DocumentUploadProps {
 }
 
 export default function DocumentUpload({ onContentSelect }: DocumentUploadProps) {
+  const router = useRouter();
   const [documents, setDocuments] = useState<Document[]>([]);
   const [selectedDocument, setSelectedDocument] = useState<Document | null>(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -37,6 +39,18 @@ export default function DocumentUpload({ onContentSelect }: DocumentUploadProps)
   const [summary, setSummary] = useState<string | null>(null);
   const [summarizing, setSummarizing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Handle authentication errors
+  const handleAuthError = () => {
+    auth.logout();
+    router.push('/auth/login');
+  };
+
+  // Fetch auth headers
+  const authHeaders = () => {
+    const token = auth.getToken();
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  };
 
   // Load documents from localStorage
   const loadDocuments = () => {
@@ -308,6 +322,7 @@ export default function DocumentUpload({ onContentSelect }: DocumentUploadProps)
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...authHeaders()
         },
         body: JSON.stringify({
           message: prompt,
@@ -316,6 +331,10 @@ export default function DocumentUpload({ onContentSelect }: DocumentUploadProps)
       });
 
       if (!response.ok) {
+        if (response.status === 401) {
+          handleAuthError();
+          return;
+        }
         throw new Error(`Failed to summarize document: ${response.status}`);
       }
 
