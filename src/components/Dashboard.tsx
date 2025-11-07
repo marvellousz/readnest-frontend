@@ -89,7 +89,7 @@ export default function Dashboard() {
 
         {/* Main Content */}
         <main className="flex-1 bg-white dark:bg-gray-900 overflow-hidden flex flex-col">
-          <div key={activeSection} className="flex-1 overflow-hidden">
+          <div key={activeSection} className="flex-1 overflow-hidden min-h-0">
             {renderMainContent()}
           </div>
         </main>

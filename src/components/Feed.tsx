@@ -325,6 +325,7 @@ export default function Feed({ onContentSelect }: FeedProps) {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...authHeaders()
         },
         body: JSON.stringify({
           message: prompt,
@@ -333,6 +334,10 @@ export default function Feed({ onContentSelect }: FeedProps) {
       });
 
       if (!response.ok) {
+        if (response.status === 401) {
+          handleAuthError();
+          return;
+        }
         throw new Error(`Failed to summarize article: ${response.status}`);
       }
 

@@ -1,12 +1,21 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { auth } from '@/lib/auth';
 
 export default function LandingPage() {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const targetHref = auth.getToken() ? '/dashboard' : '/auth/login';
+  const [targetHref, setTargetHref] = useState('/auth/login');
+
+  // Avoid hydration mismatch by resolving client-only auth after mount
+  useEffect(() => {
+    try {
+      setTargetHref(auth.getToken() ? '/dashboard' : '/auth/login');
+    } catch {
+      setTargetHref('/auth/login');
+    }
+  }, []);
 
   const features = [
     {
